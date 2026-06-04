@@ -3,7 +3,7 @@
 
     <application
         android:label="Hello World"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true">
