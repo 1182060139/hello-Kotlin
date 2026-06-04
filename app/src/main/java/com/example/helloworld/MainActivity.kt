@@ -1,44 +1,66 @@
 package com.example.helloworld
 
 import android.app.Activity
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.widget.Button
+import android.widget.TextView
+import android.widget.Toast
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import org.json.JSONException
 import org.json.JSONObject
 
 class MainActivity : Activity() {
+
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var tvError: TextView
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val jsonString = """
-        {
-          "timestamp": 1780552261,
-          "buildings": [
-            { "data": 1000012, "lvl": 14, "timer": 288211 },
-            { "data": 1000021, "lvl": 10, "timer": 17284 },
-            { "data": 1000021, "lvl": 10, "timer": 17156 },
-            { "data": 1000089, "lvl": 1, "timer": 417811 }
-          ],
-          "heroes": [
-            { "data": 28000006, "lvl": 65, "timer": 245011 }
-          ],
-          "pets": [
-            { "data": 73000003, "lvl": 12, "timer": 331411 }
-          ],
-          "buildings2": [
-            { "data": 1000054, "lvl": 9, "timer": 54652 }
-          ],
-          "siege_machines": [
-            { "data": 4000188, "lvl": 2, "timer": 569011 }
-          ]
-        }
-        """.trimIndent()
+        recyclerView = findViewById(R.id.recyclerView)
+        tvError = findViewById(R.id.tvError)
+        val btnPaste = findViewById<Button>(R.id.btnPaste)
 
-        val upgrades = parseUpgrades(jsonString)
-        val recyclerView = findViewById<RecyclerView>(R.id.recyclerView)
         recyclerView.layoutManager = LinearLayoutManager(this)
-        recyclerView.adapter = UpgradeAdapter(upgrades)
+        recyclerView.adapter = UpgradeAdapter(emptyList())   // 初始空列表
+
+        btnPaste.setOnClickListener {
+            loadFromClipboard()
+        }
+    }
+
+    private fun loadFromClipboard() {
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = clipboard.primaryClip
+        if (clip != null && clip.itemCount > 0) {
+            val text = clip.getItemAt(0).text.toString()
+            if (text.isNotBlank()) {
+                try {
+                    val upgrades = parseUpgrades(text)
+                    recyclerView.adapter = UpgradeAdapter(upgrades)
+                    tvError.visibility = android.view.View.GONE
+                    Toast.makeText(this, "解析成功，找到 ${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
+                } catch (e: JSONException) {
+                    showError("剪贴板内容不是有效的 JSON 数据")
+                } catch (e: Exception) {
+                    showError("解析出错: ${e.message}")
+                }
+            } else {
+                showError("剪贴板为空")
+            }
+        } else {
+            showError("剪贴板无内容")
+        }
+    }
+
+    private fun showError(message: String) {
+        tvError.text = message
+        tvError.visibility = android.view.View.VISIBLE
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
     private fun parseUpgrades(jsonString: String): List<UpgradeItem> {
