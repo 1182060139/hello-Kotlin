@@ -13,7 +13,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.ActivityCompat
@@ -22,17 +21,16 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONException
 import org.json.JSONObject
+import java.util.Calendar
 
 class MainActivity : Activity() {
 
     private lateinit var recyclerView: RecyclerView
     private lateinit var tvError: TextView
     private var idToNameMap: Map<Int, String> = emptyMap()
-    private val helperCooldowns = mutableMapOf<Int, Int>()
 
     private val PREFS_NAME = "clash_upgrade_prefs"
     private val KEY_JSON = "last_json"
-    private val KEY_HELPER_START = "helper_start"
 
     private var currentUpgrades = mutableListOf<UpgradeItem>()
     private lateinit var adapter: UpgradeAdapter
@@ -45,7 +43,6 @@ class MainActivity : Activity() {
         tvError = findViewById(R.id.tvError)
         val btnPaste = findViewById<Button>(R.id.btnPaste)
         val btnTestReminder = findViewById<Button>(R.id.btnTestReminder)
-        val btnSettings = findViewById<Button>(R.id.btnSettings)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
@@ -57,7 +54,6 @@ class MainActivity : Activity() {
 
         btnPaste.setOnClickListener { loadFromClipboard() }
         btnTestReminder.setOnClickListener { scheduleTestReminder() }
-        btnSettings.setOnClickListener { showSettingsDialog() }
     }
 
     // ---------- 通知渠道 ----------
@@ -123,7 +119,7 @@ class MainActivity : Activity() {
                 currentUpgrades.clear()
                 currentUpgrades.addAll(upgrades)
                 adapter = UpgradeAdapter(currentUpgrades, idToNameMap) { item, pos ->
-                    handleHelperClick(item, pos)
+                    onItemClick(item, pos)
                 }
                 recyclerView.adapter = adapter
                 tvError.visibility = android.view.View.GONE
@@ -158,7 +154,7 @@ class MainActivity : Activity() {
                     currentUpgrades.clear()
                     currentUpgrades.addAll(upgrades)
                     adapter = UpgradeAdapter(currentUpgrades, idToNameMap) { item, pos ->
-                        handleHelperClick(item, pos)
+                        onItemClick(item, pos)
                     }
                     recyclerView.adapter = adapter
                     tvError.visibility = android.view.View.GONE
@@ -173,19 +169,20 @@ class MainActivity : Activity() {
         } else showError("剪贴板无内容")
     }
 
-    // ---------- 解析（含 helpers）----------
+    // ---------- 解析 JSON 并计算助手预估 ----------
     private fun parseUpgrades(jsonString: String): List<UpgradeItem> {
         val json = JSONObject(jsonString)
         val timestampUtcSec = json.getLong("timestamp")
 
-        helperCooldowns.clear()
+        // 提取所有助手的冷却时间（按 helperId 存储）
+        val helperCooldownMap = mutableMapOf<Int, Int>()
         val helpersArr = json.optJSONArray("helpers")
         if (helpersArr != null) {
             for (i in 0 until helpersArr.length()) {
                 val hObj = helpersArr.getJSONObject(i)
                 val hId = hObj.getInt("data")
                 val cd = hObj.optInt("helper_cooldown", 0)
-                helperCooldowns[hId] = cd
+                helperCooldownMap[hId] = cd
             }
         }
 
@@ -194,6 +191,7 @@ class MainActivity : Activity() {
             "buildings", "buildings2", "heroes", "heroes2",
             "pets", "siege_machines", "units", "units2", "spells"
         )
+
         for (key in keys) {
             val arr = json.optJSONArray(key) ?: continue
             for (i in 0 until arr.length()) {
@@ -203,21 +201,38 @@ class MainActivity : Activity() {
                     val id = obj.getInt("data")
                     val lvl = obj.optInt("lvl", 0)
                     val helper = obj.optBoolean("helper_recurrent", false)
-                    val (cat, reduction) = getCategoryAndReduction(key)
-                    val helperId = when (cat) {
+                    val (category, reduction) = getCategoryAndReduction(key)
+
+                    // 确定助手ID（建筑/英雄用 93000000，实验室用 93000001）
+                    val helperId = when (category) {
                         "building", "hero" -> 93000000
                         "lab" -> 93000001
                         else -> 0
                     }
+
                     val endTimeMillis = (timestampUtcSec + timer) * 1000L
+                    val targetLvl = if (lvl > 0) lvl + 1 else 0
+
+                    // 计算预估结束时间（若使用了助手）
+                    var estimated = 0L
+                    if (helper && reduction > 0) {
+                        val cdSeconds = helperCooldownMap[helperId] ?: 0
+                        estimated = calculateEstimatedEndTime(
+                            endTimeMillis,
+                            reduction,
+                            cdSeconds,
+                            timestampUtcSec
+                        )
+                    }
+
                     result.add(
                         UpgradeItem(
                             id = id,
                             endTimeMillis = endTimeMillis,
-                            targetLevel = lvl,
+                            targetLevel = targetLvl,
                             helperRecurrent = helper,
-                            helperId = helperId,
-                            dailyReductionSeconds = reduction
+                            dailyReductionSeconds = reduction,
+                            estimatedEndTimeMillis = estimated
                         )
                     )
                 }
@@ -226,6 +241,7 @@ class MainActivity : Activity() {
         return result.sortedBy { it.endTimeMillis }
     }
 
+    /** 确定类别和每天减少的秒数（8h 或 1h） */
     private fun getCategoryAndReduction(key: String): Pair<String, Long> {
         return when (key) {
             "buildings", "buildings2", "traps" -> "building" to 28800L
@@ -235,102 +251,67 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 助手预估交互 ----------
-    private fun handleHelperClick(item: UpgradeItem, position: Int) {
-        if (!item.helperRecurrent) return
+    /**
+     * 模拟助手使用，计算预估结束时间
+     * @param originalEndTime 原始结束时间戳（毫秒）
+     * @param dailyReductionSeconds 每次加速秒数
+     * @param cooldownSeconds helpers 中的冷却秒数（导出的剩余冷却）
+     * @param exportTimestampSec 导出时的 UTC 秒数
+     */
+    private fun calculateEstimatedEndTime(
+        originalEndTime: Long,
+        dailyReductionSeconds: Long,
+        cooldownSeconds: Int,
+        exportTimestampSec: Long
+    ): Long {
+        if (dailyReductionSeconds <= 0) return originalEndTime
 
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val currentStart = prefs.getString(KEY_HELPER_START, "07:00") ?: "07:00"
+        val reductionMillis = dailyReductionSeconds * 1000L
+        val firstAvailable = (exportTimestampSec + cooldownSeconds) * 1000L
 
-        val builder = AlertDialog.Builder(this)
-        builder.setTitle("输入助手每日可用时间 (HH:mm)")
-        val input = EditText(this)
-        input.setText(currentStart)
-        input.hint = "例如 07:30"
-        builder.setView(input)
+        var currentTime = firstAvailable
+        var totalReduction = 0L
 
-        builder.setPositiveButton("计算") { dialog, _ ->
-            val timeStr = input.text.toString().trim()
-            if (timeStr.matches(Regex("\\d{1,2}:\\d{2}"))) {
-                prefs.edit().putString(KEY_HELPER_START, timeStr).apply()
-                val estimated = calculateEstimatedEndTime(item, timeStr)
-                if (estimated > 0) {
-                    currentUpgrades[position] = item.copy(estimatedEndTimeMillis = estimated)
-                    adapter.notifyItemChanged(position)
-                    // 询问是否用预估时间更新提醒
-                    AlertDialog.Builder(this)
-                        .setTitle("是否按预估时间更新提醒？")
-                        .setPositiveButton("更新") { _, _ ->
-                            // 将预估时间设为实际提醒时间
-                            currentUpgrades[position] = currentUpgrades[position].copy(
-                                endTimeMillis = estimated,
-                                estimatedEndTimeMillis = 0
-                            )
-                            adapter.notifyItemChanged(position)
-                            scheduleAllReminders()
-                        }
-                        .setNegativeButton("仅查看", null)
-                        .show()
-                } else {
-                    Toast.makeText(this, "计算失败，请检查输入", Toast.LENGTH_SHORT).show()
-                }
-            } else {
-                Toast.makeText(this, "格式错误，请使用 HH:mm", Toast.LENGTH_SHORT).show()
+        while (currentTime < originalEndTime) {
+            // 使用一次助手，累积加速量
+            totalReduction += reductionMillis
+
+            // 下一次可用 = 当前使用时间 + 23小时
+            var next = currentTime + 23 * 3600 * 1000L
+
+            // 若下次可用时间在7:00之前，则推迟到7:00
+            val cal = Calendar.getInstance()
+            cal.timeInMillis = next
+            if (cal.get(Calendar.HOUR_OF_DAY) < 7) {
+                cal.set(Calendar.HOUR_OF_DAY, 7)
+                cal.set(Calendar.MINUTE, 0)
+                cal.set(Calendar.SECOND, 0)
+                cal.set(Calendar.MILLISECOND, 0)
+                next = cal.timeInMillis
             }
-            dialog.dismiss()
+            currentTime = next
         }
-        builder.setNegativeButton("取消", null)
-        builder.show()
+
+        val newEnd = originalEndTime - totalReduction
+        return if (newEnd > System.currentTimeMillis()) newEnd else originalEndTime
     }
 
-    private fun calculateEstimatedEndTime(item: UpgradeItem, dailyStartTimeStr: String): Long {
-        val now = System.currentTimeMillis()
-        val originalRemaining = item.endTimeMillis - now
-        if (originalRemaining <= 0) return item.endTimeMillis
-
-        val cooldownSeconds = helperCooldowns.values.firstOrNull() ?: 0
-        val reductionMillis = item.dailyReductionSeconds * 1000L
-
-        val parts = dailyStartTimeStr.split(":")
-        val hour = parts[0].toIntOrNull() ?: return item.endTimeMillis
-        val minute = parts[1].toIntOrNull() ?: return item.endTimeMillis
-
-        val cal = java.util.Calendar.getInstance()
-        cal.set(java.util.Calendar.HOUR_OF_DAY, hour)
-        cal.set(java.util.Calendar.MINUTE, minute)
-        cal.set(java.util.Calendar.SECOND, 0)
-        cal.set(java.util.Calendar.MILLISECOND, 0)
-        val todayStart = cal.timeInMillis
-        val nextDailyStart = if (todayStart > now) todayStart else todayStart + 86400000L
-
-        val cooldownEnd = now + cooldownSeconds * 1000L
-        val firstAvailable = maxOf(nextDailyStart, cooldownEnd)
-
-        if (firstAvailable >= item.endTimeMillis) return item.endTimeMillis
-
-        val dayMillis = 86400000L
-        val count = ((item.endTimeMillis - firstAvailable) / dayMillis) + 1
-        val totalReduction = count * reductionMillis
-        val newRemaining = maxOf(0L, originalRemaining - totalReduction)
-        return now + newRemaining
-    }
-
-    // ---------- 设置对话框 ----------
-    private fun showSettingsDialog() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val helperStart = prefs.getString(KEY_HELPER_START, "07:00") ?: "07:00"
-
-        val inflater = layoutInflater
-        val view = inflater.inflate(R.layout.dialog_settings, null)
-        val etHelper = view.findViewById<EditText>(R.id.etHelperStart)
-        etHelper.setText(helperStart)
+    // ---------- 点击列表项：若使用了助手，可选择按预估时间更新提醒 ----------
+    private fun onItemClick(item: UpgradeItem, position: Int) {
+        if (!item.helperRecurrent || item.estimatedEndTimeMillis <= 0) return
 
         AlertDialog.Builder(this)
-            .setTitle("设置助手每日可用时间")
-            .setView(view)
-            .setPositiveButton("保存") { _, _ ->
-                prefs.edit().putString(KEY_HELPER_START, etHelper.text.toString().trim()).apply()
-                Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
+            .setTitle("助手提醒")
+            .setMessage("是否将提醒时间更新为预估时间？")
+            .setPositiveButton("更新") { _, _ ->
+                // 将原始结束时间替换为预估时间，并清除预估标记
+                currentUpgrades[position] = item.copy(
+                    endTimeMillis = item.estimatedEndTimeMillis,
+                    estimatedEndTimeMillis = 0
+                )
+                adapter.notifyItemChanged(position)
+                scheduleAllReminders()
+                Toast.makeText(this, "提醒已更新为预估时间", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -341,6 +322,7 @@ class MainActivity : Activity() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        // 取消旧闹钟
         val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
         for (key in oldKeys) {
             val intent = Intent(this, ReminderReceiver::class.java)
@@ -356,7 +338,7 @@ class MainActivity : Activity() {
         var nextReminderName: String = ""
 
         for (item in currentUpgrades) {
-            val reminderTime = item.endTimeMillis - 30_000L   // 使用当前的 endTimeMillis（可能已被预估时间替换）
+            val reminderTime = item.endTimeMillis - 30_000L
             if (reminderTime <= System.currentTimeMillis()) continue
 
             val intent = Intent(this, ReminderReceiver::class.java).apply {
