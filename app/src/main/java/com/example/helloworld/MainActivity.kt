@@ -100,9 +100,11 @@ class MainActivity : Activity() {
                 val arr = root.optJSONArray(category) ?: continue
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
-                    val id = obj.getInt("_id")
-                    val name = obj.getString("name")
-                    map[id] = name
+                    val id = obj.optInt("_id", -1)
+                    val name = obj.optString("name", "")
+                    if (id != -1 && name.isNotEmpty()) {
+                        map[id] = name
+                    }
                 }
             }
             idToNameMap = map
