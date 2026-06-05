@@ -45,7 +45,7 @@ class ReminderReceiver : BroadcastReceiver() {
             .setContentTitle("升级即将完成")
             .setContentText("$name 将在30秒后完成升级")
             .setCategory(NotificationCompat.CATEGORY_ALARM)   // 归类为闹钟
-            .setPriority(NotificationCompat.PRIORITY_MAX)     // 最高优先级
+            .setPriority(NotificationCompat.PRIORITY_HIGH)     // 最高优先级
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setVibrate(longArrayOf(0, 300, 200, 300))
