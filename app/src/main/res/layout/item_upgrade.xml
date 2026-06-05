@@ -37,24 +37,35 @@
                 android:textColor="#666666" />
         </LinearLayout>
 
-        <!-- 助手标记 -->
+        <!-- 原始结束时间（始终显示） -->
         <TextView
-            android:id="@+id/tvHelper"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="🛠️ 助手"
-            android:textSize="12sp"
-            android:textColor="#FF5722"
-            android:layout_marginTop="4dp"
-            android:visibility="gone"/>
-
-        <!-- 结束时间 -->
-        <TextView
-            android:id="@+id/tvEndTime"
+            android:id="@+id/tvOriginalEndTime"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="结束: 2026-06-08 02:27:41"
             android:textSize="14sp"
             android:layout_marginTop="4dp" />
+
+        <!-- 是否使用助手（仅当 helperRecurrent 时显示） -->
+        <TextView
+            android:id="@+id/tvHelperStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="使用助手: 是"
+            android:textSize="12sp"
+            android:textColor="#FF5722"
+            android:layout_marginTop="4dp"
+            android:visibility="gone"/>
+
+        <!-- 预估时间（仅当使用了助手且已计算时显示） -->
+        <TextView
+            android:id="@+id/tvEstimatedEndTime"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="预估: 2026-06-07 14:27:41"
+            android:textSize="14sp"
+            android:textColor="#FF5722"
+            android:layout_marginTop="4dp"
+            android:visibility="gone"/>
     </LinearLayout>
 </androidx.cardview.widget.CardView>

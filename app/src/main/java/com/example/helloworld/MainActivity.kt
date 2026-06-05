@@ -9,7 +9,6 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.*
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -29,12 +28,11 @@ class MainActivity : Activity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var tvError: TextView
     private var idToNameMap: Map<Int, String> = emptyMap()
-    private val helperCooldowns = mutableMapOf<Int, Int>() // helperId -> cooldown秒
+    private val helperCooldowns = mutableMapOf<Int, Int>()
 
     private val PREFS_NAME = "clash_upgrade_prefs"
     private val KEY_JSON = "last_json"
-    private val KEY_BUILDER_START = "builder_helper_start"
-    private val KEY_LAB_START = "lab_helper_start"
+    private val KEY_HELPER_START = "helper_start"
 
     private var currentUpgrades = mutableListOf<UpgradeItem>()
     private lateinit var adapter: UpgradeAdapter
@@ -79,9 +77,7 @@ class MainActivity : Activity() {
                 != PackageManager.PERMISSION_GRANTED
             ) {
                 ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    1001
+                    this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001
                 )
             }
         }
@@ -106,9 +102,7 @@ class MainActivity : Activity() {
                     val obj = arr.optJSONObject(i) ?: continue
                     val id = obj.optInt("_id", -1)
                     val name = obj.optString("name", "")
-                    if (id != -1 && name.isNotEmpty()) {
-                        map[id] = name
-                    }
+                    if (id != -1 && name.isNotEmpty()) map[id] = name
                 }
             }
             idToNameMap = map
@@ -133,7 +127,7 @@ class MainActivity : Activity() {
                 }
                 recyclerView.adapter = adapter
                 tvError.visibility = android.view.View.GONE
-                scheduleAllReminders(currentUpgrades)
+                scheduleAllReminders()
             } catch (e: Exception) {
                 prefs.edit().remove(KEY_JSON).apply()
                 currentUpgrades.clear()
@@ -169,18 +163,14 @@ class MainActivity : Activity() {
                     recyclerView.adapter = adapter
                     tvError.visibility = android.view.View.GONE
                     Toast.makeText(this, "导入成功，${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
-                    scheduleAllReminders(currentUpgrades)
+                    scheduleAllReminders()
                 } catch (e: JSONException) {
                     showError("剪贴板内容不是有效的 JSON 数据")
                 } catch (e: Exception) {
                     showError("解析出错: ${e.message}")
                 }
-            } else {
-                showError("剪贴板为空")
-            }
-        } else {
-            showError("剪贴板无内容")
-        }
+            } else showError("剪贴板为空")
+        } else showError("剪贴板无内容")
     }
 
     // ---------- 解析（含 helpers）----------
@@ -188,7 +178,6 @@ class MainActivity : Activity() {
         val json = JSONObject(jsonString)
         val timestampUtcSec = json.getLong("timestamp")
 
-        // 解析 helpers 冷却时间
         helperCooldowns.clear()
         val helpersArr = json.optJSONArray("helpers")
         if (helpersArr != null) {
@@ -246,13 +235,12 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 助手预估时间交互 ----------
+    // ---------- 助手预估交互 ----------
     private fun handleHelperClick(item: UpgradeItem, position: Int) {
         if (!item.helperRecurrent) return
 
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val startKey = if (item.helperId == 93000001) KEY_LAB_START else KEY_BUILDER_START
-        val currentStart = prefs.getString(startKey, "07:00") ?: "07:00"
+        val currentStart = prefs.getString(KEY_HELPER_START, "07:00") ?: "07:00"
 
         val builder = AlertDialog.Builder(this)
         builder.setTitle("输入助手每日可用时间 (HH:mm)")
@@ -264,21 +252,22 @@ class MainActivity : Activity() {
         builder.setPositiveButton("计算") { dialog, _ ->
             val timeStr = input.text.toString().trim()
             if (timeStr.matches(Regex("\\d{1,2}:\\d{2}"))) {
-                prefs.edit().putString(startKey, timeStr).apply()
+                prefs.edit().putString(KEY_HELPER_START, timeStr).apply()
                 val estimated = calculateEstimatedEndTime(item, timeStr)
                 if (estimated > 0) {
                     currentUpgrades[position] = item.copy(estimatedEndTimeMillis = estimated)
                     adapter.notifyItemChanged(position)
+                    // 询问是否用预估时间更新提醒
                     AlertDialog.Builder(this)
                         .setTitle("是否按预估时间更新提醒？")
-                        .setMessage("点击确定将重新设置闹钟")
                         .setPositiveButton("更新") { _, _ ->
+                            // 将预估时间设为实际提醒时间
                             currentUpgrades[position] = currentUpgrades[position].copy(
                                 endTimeMillis = estimated,
                                 estimatedEndTimeMillis = 0
                             )
                             adapter.notifyItemChanged(position)
-                            scheduleAllReminders(currentUpgrades)
+                            scheduleAllReminders()
                         }
                         .setNegativeButton("仅查看", null)
                         .show()
@@ -299,7 +288,7 @@ class MainActivity : Activity() {
         val originalRemaining = item.endTimeMillis - now
         if (originalRemaining <= 0) return item.endTimeMillis
 
-        val cooldownSeconds = helperCooldowns[item.helperId] ?: 0
+        val cooldownSeconds = helperCooldowns.values.firstOrNull() ?: 0
         val reductionMillis = item.dailyReductionSeconds * 1000L
 
         val parts = dailyStartTimeStr.split(":")
@@ -329,30 +318,26 @@ class MainActivity : Activity() {
     // ---------- 设置对话框 ----------
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val builderStart = prefs.getString(KEY_BUILDER_START, "07:00") ?: "07:00"
-        val labStart = prefs.getString(KEY_LAB_START, "07:00") ?: "07:00"
+        val helperStart = prefs.getString(KEY_HELPER_START, "07:00") ?: "07:00"
 
         val inflater = layoutInflater
         val view = inflater.inflate(R.layout.dialog_settings, null)
-        val etBuilder = view.findViewById<EditText>(R.id.etBuilderStart)
-        val etLab = view.findViewById<EditText>(R.id.etLabStart)
-        etBuilder.setText(builderStart)
-        etLab.setText(labStart)
+        val etHelper = view.findViewById<EditText>(R.id.etHelperStart)
+        etHelper.setText(helperStart)
 
         AlertDialog.Builder(this)
             .setTitle("设置助手每日可用时间")
             .setView(view)
             .setPositiveButton("保存") { _, _ ->
-                prefs.edit().putString(KEY_BUILDER_START, etBuilder.text.toString().trim()).apply()
-                prefs.edit().putString(KEY_LAB_START, etLab.text.toString().trim()).apply()
+                prefs.edit().putString(KEY_HELPER_START, etHelper.text.toString().trim()).apply()
                 Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show()
             }
             .setNegativeButton("取消", null)
             .show()
     }
 
-    // ---------- 闹钟设置（使用 setAlarmClock） ----------
-    private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
+    // ---------- 闹钟设置 ----------
+    private fun scheduleAllReminders() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
@@ -370,8 +355,8 @@ class MainActivity : Activity() {
         var nextReminderTime: Long = Long.MAX_VALUE
         var nextReminderName: String = ""
 
-        for (item in upgrades) {
-            val reminderTime = item.endTimeMillis - 30_000L
+        for (item in currentUpgrades) {
+            val reminderTime = item.endTimeMillis - 30_000L   // 使用当前的 endTimeMillis（可能已被预估时间替换）
             if (reminderTime <= System.currentTimeMillis()) continue
 
             val intent = Intent(this, ReminderReceiver::class.java).apply {
@@ -391,7 +376,6 @@ class MainActivity : Activity() {
             )
 
             newKeys.add(item.uniqueKey)
-
             if (reminderTime < nextReminderTime) {
                 nextReminderTime = reminderTime
                 nextReminderName = idToNameMap[item.id] ?: "ID:${item.id}"

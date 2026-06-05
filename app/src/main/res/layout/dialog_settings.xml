@@ -8,23 +8,10 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="建筑/英雄助手每日开始时间"/>
+        android:text="助手每日可用时间 (HH:mm)"/>
 
     <EditText
-        android:id="@+id/etBuilderStart"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="07:00"
-        android:inputType="datetime" />
-
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:text="实验室助手每日开始时间"/>
-
-    <EditText
-        android:id="@+id/etLabStart"
+        android:id="@+id/etHelperStart"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:hint="07:00"
