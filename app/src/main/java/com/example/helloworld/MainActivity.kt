@@ -3,6 +3,8 @@ package com.example.helloworld
 import android.Manifest
 import android.app.Activity
 import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.*
 import android.content.pm.PackageManager
@@ -37,18 +39,36 @@ class MainActivity : Activity() {
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
+        // *** 关键：先创建通知渠道，让系统知道这个应用会发通知 ***
+        createNotificationChannel()
+
+        // 然后请求通知权限（Android 13+）
+        requestNotificationPermission()
+
         loadIdMapping()
         loadSavedData()
 
         btnPaste.setOnClickListener {
             loadFromClipboard()
         }
-
-        // 请求通知权限（Android 13+）
-        requestNotificationPermission()
     }
 
-    /** 请求通知权限，拒绝也不影响其他功能 */
+    /** 创建通知渠道，必须在发通知和申请权限之前调用 */
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "upgrade_reminder",
+                "升级提醒",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "建筑或研究即将完成提醒"
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+        }
+    }
+
+    /** 请求通知权限，并处理“不再提示”的情况 */
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -63,7 +83,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- ID 映射加载 ----------
+    // ---------- ID 映射 ----------
     private fun loadIdMapping() {
         try {
             val files = assets.list("") ?: emptyArray()
@@ -102,7 +122,6 @@ class MainActivity : Activity() {
                 val upgrades = parseUpgrades(savedJson)
                 recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
                 tvError.visibility = android.view.View.GONE
-                // 设置闹钟提醒
                 scheduleAllReminders(upgrades)
             } catch (e: Exception) {
                 prefs.edit().remove(KEY_JSON).apply()
@@ -115,7 +134,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 从剪贴板导入 ----------
+    // ---------- 剪贴板导入 ----------
     private fun loadFromClipboard() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = clipboard.primaryClip
@@ -124,7 +143,6 @@ class MainActivity : Activity() {
             if (text.isNotBlank()) {
                 try {
                     val upgrades = parseUpgrades(text)
-                    // 保存 JSON
                     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     prefs.edit().putString(KEY_JSON, text).apply()
 
@@ -132,7 +150,6 @@ class MainActivity : Activity() {
                     tvError.visibility = android.view.View.GONE
                     Toast.makeText(this, "导入成功，${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
 
-                    // 重新设置提醒
                     scheduleAllReminders(upgrades)
                 } catch (e: JSONException) {
                     showError("剪贴板内容不是有效的 JSON 数据")
@@ -147,13 +164,11 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 提醒设置 ----------
-    /** 根据最新的升级列表，重新安排所有闹钟 */
+    // ---------- 闹钟设置 ----------
     private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // 1. 取消之前所有提醒（通过存储的 uniqueKey 集合）
         val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
         for (key in oldKeys) {
             val intent = Intent(this, ReminderReceiver::class.java)
@@ -164,11 +179,9 @@ class MainActivity : Activity() {
             pendingIntent?.let { alarmManager.cancel(it) }
         }
 
-        // 2. 设置新的闹钟
         val newKeys = mutableSetOf<String>()
         for (item in upgrades) {
-            val reminderTime = item.endTimeMillis - 30_000L  // 结束前30秒
-            // 如果提醒时间已经过去，则跳过
+            val reminderTime = item.endTimeMillis - 30_000L
             if (reminderTime <= System.currentTimeMillis()) continue
 
             val intent = Intent(this, ReminderReceiver::class.java).apply {
@@ -180,7 +193,6 @@ class MainActivity : Activity() {
                 this, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
-
             alarmManager.setAndAllowWhileIdle(
                 AlarmManager.RTC_WAKEUP,
                 reminderTime,
@@ -188,8 +200,6 @@ class MainActivity : Activity() {
             )
             newKeys.add(item.uniqueKey)
         }
-
-        // 3. 保存新 key 集合，供下次取消使用
         prefs.edit().putStringSet("reminder_keys", newKeys).apply()
     }
 
