@@ -8,8 +8,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.*
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -36,13 +38,12 @@ class MainActivity : Activity() {
         recyclerView = findViewById(R.id.recyclerView)
         tvError = findViewById(R.id.tvError)
         val btnPaste = findViewById<Button>(R.id.btnPaste)
+        val btnTestReminder = findViewById<Button>(R.id.btnTestReminder)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        // *** 关键：先创建通知渠道，让系统知道这个应用会发通知 ***
+        // 创建通知渠道（必须在请求权限前）
         createNotificationChannel()
-
-        // 然后请求通知权限（Android 13+）
         requestNotificationPermission()
 
         loadIdMapping()
@@ -51,14 +52,41 @@ class MainActivity : Activity() {
         btnPaste.setOnClickListener {
             loadFromClipboard()
         }
-        val btnTestReminder = findViewById<Button>(R.id.btnTestReminder)
-            btnTestReminder.setOnClickListener {
-                scheduleTestReminder()
-        }
 
+        // 测试通知按钮（短按测试，长按引导开启精确闹钟）
+        btnTestReminder.setOnClickListener {
+            scheduleTestReminder()
+        }
+        btnTestReminder.setOnLongClickListener {
+            openExactAlarmSettings()
+            true
+        }
     }
 
-    /** 创建通知渠道，必须在发通知和申请权限之前调用 */
+    // ---------- 精确闹钟权限检查 ----------
+    private fun hasExactAlarmPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true // Android 12 以下无需权限
+        }
+    }
+
+    // 引导用户开启精确闹钟
+    private fun openExactAlarmSettings() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                data = Uri.parse("package:$packageName")
+            }
+            startActivity(intent)
+            Toast.makeText(this, "请将“允许精确闹钟”设为开启", Toast.LENGTH_LONG).show()
+        } else {
+            Toast.makeText(this, "您的系统无需额外设置", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---------- 通知渠道 ----------
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -73,7 +101,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 请求通知权限，并处理“不再提示”的情况 */
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -121,22 +148,27 @@ class MainActivity : Activity() {
     }
 
     // ---------- 持久化加载 ----------
+    private var currentUpgrades: List<UpgradeItem> = emptyList()
+
     private fun loadSavedData() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedJson = prefs.getString(KEY_JSON, null)
         if (!savedJson.isNullOrBlank()) {
             try {
                 val upgrades = parseUpgrades(savedJson)
-                recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
+                currentUpgrades = upgrades
+                recyclerView.adapter = UpgradeAdapter(currentUpgrades, idToNameMap)
                 tvError.visibility = android.view.View.GONE
-                scheduleAllReminders(upgrades)
+                scheduleAllReminders(currentUpgrades)
             } catch (e: Exception) {
                 prefs.edit().remove(KEY_JSON).apply()
+                currentUpgrades = emptyList()
                 recyclerView.adapter = UpgradeAdapter(emptyList(), idToNameMap)
                 tvError.text = "保存的数据已过期，请重新导入"
                 tvError.visibility = android.view.View.VISIBLE
             }
         } else {
+            currentUpgrades = emptyList()
             recyclerView.adapter = UpgradeAdapter(emptyList(), idToNameMap)
         }
     }
@@ -153,11 +185,11 @@ class MainActivity : Activity() {
                     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     prefs.edit().putString(KEY_JSON, text).apply()
 
-                    recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
+                    currentUpgrades = upgrades
+                    recyclerView.adapter = UpgradeAdapter(currentUpgrades, idToNameMap)
                     tvError.visibility = android.view.View.GONE
                     Toast.makeText(this, "导入成功，${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
-
-                    scheduleAllReminders(upgrades)
+                    scheduleAllReminders(currentUpgrades)
                 } catch (e: JSONException) {
                     showError("剪贴板内容不是有效的 JSON 数据")
                 } catch (e: Exception) {
@@ -171,7 +203,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 闹钟设置 ----------
+    // ---------- 闹钟设置（支持精确闹钟） ----------
     private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -190,43 +222,40 @@ class MainActivity : Activity() {
         val newKeys = mutableSetOf<String>()
         var nextReminderTime: Long = Long.MAX_VALUE
         var nextReminderName: String = ""
+        val useExact = hasExactAlarmPermission()
 
         for (item in upgrades) {
             val reminderTime = item.endTimeMillis - 30_000L
-            if (reminderTime <= System.currentTimeMillis()) {
-                continue   // 已过期，跳过
-            }
+            if (reminderTime <= System.currentTimeMillis()) continue
 
             val intent = Intent(this, ReminderReceiver::class.java).apply {
                 putExtra("id", item.id)
                 putExtra("name", idToNameMap[item.id] ?: "ID:${item.id}")
-                // 提高 Intent 的区分度，避免混淆
-                data = android.net.Uri.parse("custom://${item.uniqueKey}")
+                data = Uri.parse("custom://${item.uniqueKey}")
             }
-            val requestCode = System.identityHashCode(item.uniqueKey)  // 更稳定的唯一哈希
+            val requestCode = System.identityHashCode(item.uniqueKey)
             val pendingIntent = PendingIntent.getBroadcast(
                 this, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            alarmManager.setAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                reminderTime,
-                pendingIntent
-            )
+            // 根据权限选择闹钟类型
+            if (useExact) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderTime, pendingIntent)
+            } else {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderTime, pendingIntent)
+            }
             newKeys.add(item.uniqueKey)
 
-            // 记录最早的提醒
             if (reminderTime < nextReminderTime) {
                 nextReminderTime = reminderTime
                 nextReminderName = idToNameMap[item.id] ?: "ID:${item.id}"
             }
         }
 
-        // 保存新 key 集合
         prefs.edit().putStringSet("reminder_keys", newKeys).apply()
 
-        // 提示用户
+        // 提示设置结果
         if (newKeys.isEmpty()) {
             Toast.makeText(this, "所有升级时间均已过去，未设置提醒", Toast.LENGTH_LONG).show()
         } else {
@@ -235,8 +264,36 @@ class MainActivity : Activity() {
                 .atZone(java.time.ZoneId.of("Asia/Shanghai"))
                 .toLocalDateTime()
                 .format(formatter)
-            Toast.makeText(this, "已设置提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
+            val mode = if (useExact) "精确" else "标准"
+            Toast.makeText(this, "已设置${mode}提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
+
+            if (!useExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Toast.makeText(this, "长按“测试通知”按钮开启精确闹钟，提醒更准时", Toast.LENGTH_SHORT).show()
+            }
         }
+    }
+
+    // ---------- 测试通知（同样根据权限选择精确度） ----------
+    private fun scheduleTestReminder() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, ReminderReceiver::class.java).apply {
+            putExtra("id", 9999)
+            putExtra("name", "测试建筑")
+            data = Uri.parse("custom://test_9999")
+        }
+        val requestCode = 9999
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + 10_000L
+
+        if (hasExactAlarmPermission()) {
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        } else {
+            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
+        }
+        Toast.makeText(this, "测试通知将在10秒后弹出", Toast.LENGTH_SHORT).show()
     }
 
     // ---------- JSON 解析 ----------
@@ -268,25 +325,5 @@ class MainActivity : Activity() {
         tvError.text = message
         tvError.visibility = android.view.View.VISIBLE
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
-    }
-    
-    private fun scheduleTestReminder() {
-        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        val intent = Intent(this, ReminderReceiver::class.java).apply {
-            putExtra("id", 9999)
-            putExtra("name", "测试建筑")
-        }
-        val requestCode = 9999
-        val pendingIntent = PendingIntent.getBroadcast(
-            this, requestCode, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val triggerTime = System.currentTimeMillis() + 10_000L  // 10秒后
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            triggerTime,
-            pendingIntent
-        )
-        Toast.makeText(this, "测试通知将在10秒后弹出", Toast.LENGTH_SHORT).show()
     }
 }
