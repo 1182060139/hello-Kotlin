@@ -9,8 +9,10 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-class UpgradeAdapter(private val items: List<UpgradeItem>) :
-    RecyclerView.Adapter<UpgradeAdapter.ViewHolder>() {
+class UpgradeAdapter(
+    private val items: List<UpgradeItem>,
+    private val idToName: Map<Int, String>
+) : RecyclerView.Adapter<UpgradeAdapter.ViewHolder>() {
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val tvBuildingId: TextView = view.findViewById(R.id.tvBuildingId)
@@ -25,7 +27,9 @@ class UpgradeAdapter(private val items: List<UpgradeItem>) :
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = items[position]
-        holder.tvBuildingId.text = "建筑 ID: ${item.id}"
+        val name = idToName[item.id] ?: "ID: ${item.id}"
+        holder.tvBuildingId.text = name
+
         val shanghaiZone = ZoneId.of("Asia/Shanghai")
         val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
         val endTimeStr = Instant.ofEpochMilli(item.endTimeMillis)
