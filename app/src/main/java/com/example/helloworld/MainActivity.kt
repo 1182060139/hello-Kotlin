@@ -176,6 +176,7 @@ class MainActivity : Activity() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        // 取消旧闹钟
         val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
         for (key in oldKeys) {
             val intent = Intent(this, ReminderReceiver::class.java)
@@ -187,27 +188,55 @@ class MainActivity : Activity() {
         }
 
         val newKeys = mutableSetOf<String>()
+        var nextReminderTime: Long = Long.MAX_VALUE
+        var nextReminderName: String = ""
+
         for (item in upgrades) {
             val reminderTime = item.endTimeMillis - 30_000L
-            if (reminderTime <= System.currentTimeMillis()) continue
+            if (reminderTime <= System.currentTimeMillis()) {
+                continue   // 已过期，跳过
+            }
 
             val intent = Intent(this, ReminderReceiver::class.java).apply {
                 putExtra("id", item.id)
                 putExtra("name", idToNameMap[item.id] ?: "ID:${item.id}")
+                // 提高 Intent 的区分度，避免混淆
+                data = android.net.Uri.parse("custom://${item.uniqueKey}")
             }
-            val requestCode = item.uniqueKey.hashCode()
+            val requestCode = System.identityHashCode(item.uniqueKey)  // 更稳定的唯一哈希
             val pendingIntent = PendingIntent.getBroadcast(
                 this, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
+
             alarmManager.setAndAllowWhileIdle(
                 AlarmManager.RTC_WAKEUP,
                 reminderTime,
                 pendingIntent
             )
             newKeys.add(item.uniqueKey)
+
+            // 记录最早的提醒
+            if (reminderTime < nextReminderTime) {
+                nextReminderTime = reminderTime
+                nextReminderName = idToNameMap[item.id] ?: "ID:${item.id}"
+            }
         }
+
+        // 保存新 key 集合
         prefs.edit().putStringSet("reminder_keys", newKeys).apply()
+
+        // 提示用户
+        if (newKeys.isEmpty()) {
+            Toast.makeText(this, "所有升级时间均已过去，未设置提醒", Toast.LENGTH_LONG).show()
+        } else {
+            val formatter = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
+            val timeStr = java.time.Instant.ofEpochMilli(nextReminderTime)
+                .atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .toLocalDateTime()
+                .format(formatter)
+            Toast.makeText(this, "已设置提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
+        }
     }
 
     // ---------- JSON 解析 ----------
