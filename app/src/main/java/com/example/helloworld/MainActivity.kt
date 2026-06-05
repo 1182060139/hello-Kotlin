@@ -45,26 +45,41 @@ class MainActivity : Activity() {
     /** 从 assets/id_mapping.json 读取所有 _id 和 name，构建映射表 */
     private fun loadIdMapping() {
         try {
+            // 尝试列出 assets 目录下的文件，确认文件存在（可选）
+            val files = assets.list("") ?: emptyArray()
+            if (!files.contains("id_mapping.json")) {
+                Toast.makeText(this, "未找到 id_mapping.json 文件，请确认已放入 assets 目录", Toast.LENGTH_LONG).show()
+                return
+            }
+
             val jsonString = assets.open("id_mapping.json").bufferedReader().use { it.readText() }
             val root = JSONObject(jsonString)
             val map = mutableMapOf<Int, String>()
 
-            // 遍历 JSON 对象的所有键（类别），每个键对应一个数组
+            // 遍历 JSON 对象的所有键（类别）
             val categories = root.keys()
             while (categories.hasNext()) {
                 val category = categories.next()
                 val arr = root.optJSONArray(category) ?: continue
                 for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    val id = obj.getInt("_id")
-                    val name = obj.getString("name")
-                    map[id] = name
+                    try {
+                        // 安全获取对象，如果元素不是 JSONObject 会返回 null
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val id = obj.getInt("_id")
+                        val name = obj.getString("name")
+                        map[id] = name
+                    } catch (e: Exception) {
+                        // 跳过解析失败的单条记录
+                        continue
+                    }
                 }
             }
             idToNameMap = map
+            Toast.makeText(this, "映射文件加载成功，共 ${map.size} 个名称", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             idToNameMap = emptyMap()
-            Toast.makeText(this, "映射文件加载失败，将显示 ID", Toast.LENGTH_SHORT).show()
+            val errorMsg = e.message ?: "未知错误"
+            Toast.makeText(this, "映射文件加载失败: $errorMsg", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -78,7 +93,6 @@ class MainActivity : Activity() {
                 recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
                 tvError.visibility = android.view.View.GONE
             } catch (e: Exception) {
-                // 保存的数据损坏了，清空并显示空列表
                 prefs.edit().remove(KEY_JSON).apply()
                 recyclerView.adapter = UpgradeAdapter(emptyList(), idToNameMap)
                 tvError.text = "保存的数据已过期，请重新导入"
@@ -98,7 +112,6 @@ class MainActivity : Activity() {
             if (text.isNotBlank()) {
                 try {
                     val upgrades = parseUpgrades(text)
-                    // 保存原始 JSON 到 SharedPreferences
                     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     prefs.edit().putString(KEY_JSON, text).apply()
 
@@ -137,7 +150,7 @@ class MainActivity : Activity() {
         for (key in keys) {
             val arr = json.optJSONArray(key) ?: continue
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
+                val obj = arr.optJSONObject(i) ?: continue
                 val timer = obj.optInt("timer", 0)
                 if (timer > 0) {
                     val id = obj.getInt("data")
