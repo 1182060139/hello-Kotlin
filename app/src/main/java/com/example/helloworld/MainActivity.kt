@@ -51,6 +51,11 @@ class MainActivity : Activity() {
         btnPaste.setOnClickListener {
             loadFromClipboard()
         }
+        val btnTestReminder = findViewById<Button>(R.id.btnTestReminder)
+            btnTestReminder.setOnClickListener {
+                scheduleTestReminder()
+        }
+
     }
 
     /** 创建通知渠道，必须在发通知和申请权限之前调用 */
@@ -234,5 +239,25 @@ class MainActivity : Activity() {
         tvError.text = message
         tvError.visibility = android.view.View.VISIBLE
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+    
+    private fun scheduleTestReminder() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, ReminderReceiver::class.java).apply {
+            putExtra("id", 9999)
+            putExtra("name", "测试建筑")
+        }
+        val requestCode = 9999
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + 10_000L  // 10秒后
+        alarmManager.setAndAllowWhileIdle(
+            AlarmManager.RTC_WAKEUP,
+            triggerTime,
+            pendingIntent
+        )
+        Toast.makeText(this, "测试通知将在10秒后弹出", Toast.LENGTH_SHORT).show()
     }
 }

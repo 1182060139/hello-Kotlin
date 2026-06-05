@@ -20,7 +20,13 @@
         android:layout_height="wrap_content"
         android:text="从剪贴板读取 JSON"
         android:layout_marginBottom="8dp"/>
-
+    <Button
+        android:id="@+id/btnTestReminder"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="测试通知（10秒后）"
+        android:layout_marginBottom="8dp"/>
+        
     <TextView
         android:id="@+id/tvError"
         android:layout_width="match_parent"
