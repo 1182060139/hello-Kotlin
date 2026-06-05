@@ -21,7 +21,6 @@ class ReminderReceiver : BroadcastReceiver() {
         val channelId = "upgrade_reminder"
         val notificationManager = NotificationManagerCompat.from(context)
 
-        // 创建通知渠道（Android 8.0+）
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
@@ -33,7 +32,6 @@ class ReminderReceiver : BroadcastReceiver() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        // 点击通知跳转到主界面
         val openIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
         }
@@ -46,13 +44,13 @@ class ReminderReceiver : BroadcastReceiver() {
             .setSmallIcon(android.R.drawable.ic_popup_reminder)
             .setContentTitle("升级即将完成")
             .setContentText("$name 将在30秒后完成升级")
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)   // 归类为闹钟
+            .setPriority(NotificationCompat.PRIORITY_MAX)     // 最高优先级
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setVibrate(longArrayOf(0, 300, 200, 300))
             .build()
 
-        // Android 13+ 需检查通知权限，Receiver 中也会检查
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
                 android.content.pm.PackageManager.PERMISSION_GRANTED

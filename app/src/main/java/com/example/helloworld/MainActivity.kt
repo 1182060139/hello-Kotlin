@@ -11,7 +11,6 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -53,36 +52,9 @@ class MainActivity : Activity() {
             loadFromClipboard()
         }
 
-        // 测试通知按钮（短按测试，长按引导开启精确闹钟）
+        // 测试通知（10秒后）
         btnTestReminder.setOnClickListener {
             scheduleTestReminder()
-        }
-        btnTestReminder.setOnLongClickListener {
-            openExactAlarmSettings()
-            true
-        }
-    }
-
-    // ---------- 精确闹钟权限检查 ----------
-    private fun hasExactAlarmPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            alarmManager.canScheduleExactAlarms()
-        } else {
-            true // Android 12 以下无需权限
-        }
-    }
-
-    // 引导用户开启精确闹钟
-    private fun openExactAlarmSettings() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
-            Toast.makeText(this, "请将“允许精确闹钟”设为开启", Toast.LENGTH_LONG).show()
-        } else {
-            Toast.makeText(this, "您的系统无需额外设置", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -203,7 +175,7 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- 闹钟设置（支持精确闹钟） ----------
+    // ---------- 闹钟设置：使用 setAlarmClock（无需额外权限） ----------
     private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -222,7 +194,6 @@ class MainActivity : Activity() {
         val newKeys = mutableSetOf<String>()
         var nextReminderTime: Long = Long.MAX_VALUE
         var nextReminderName: String = ""
-        val useExact = hasExactAlarmPermission()
 
         for (item in upgrades) {
             val reminderTime = item.endTimeMillis - 30_000L
@@ -239,12 +210,11 @@ class MainActivity : Activity() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            // 根据权限选择闹钟类型
-            if (useExact) {
-                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderTime, pendingIntent)
-            } else {
-                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminderTime, pendingIntent)
-            }
+            // 使用 setAlarmClock 获得最高精度和强制显示
+            alarmManager.setAlarmClock(
+                AlarmManager.AlarmClockInfo(reminderTime, pendingIntent),
+                pendingIntent
+            )
             newKeys.add(item.uniqueKey)
 
             if (reminderTime < nextReminderTime) {
@@ -255,7 +225,6 @@ class MainActivity : Activity() {
 
         prefs.edit().putStringSet("reminder_keys", newKeys).apply()
 
-        // 提示设置结果
         if (newKeys.isEmpty()) {
             Toast.makeText(this, "所有升级时间均已过去，未设置提醒", Toast.LENGTH_LONG).show()
         } else {
@@ -264,16 +233,11 @@ class MainActivity : Activity() {
                 .atZone(java.time.ZoneId.of("Asia/Shanghai"))
                 .toLocalDateTime()
                 .format(formatter)
-            val mode = if (useExact) "精确" else "标准"
-            Toast.makeText(this, "已设置${mode}提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
-
-            if (!useExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                Toast.makeText(this, "长按“测试通知”按钮开启精确闹钟，提醒更准时", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(this, "已设置提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
         }
     }
 
-    // ---------- 测试通知（同样根据权限选择精确度） ----------
+    // ---------- 测试通知（使用 setAlarmClock） ----------
     private fun scheduleTestReminder() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val intent = Intent(this, ReminderReceiver::class.java).apply {
@@ -288,11 +252,10 @@ class MainActivity : Activity() {
         )
         val triggerTime = System.currentTimeMillis() + 10_000L
 
-        if (hasExactAlarmPermission()) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-        } else {
-            alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTime, pendingIntent)
-        }
+        alarmManager.setAlarmClock(
+            AlarmManager.AlarmClockInfo(triggerTime, pendingIntent),
+            pendingIntent
+        )
         Toast.makeText(this, "测试通知将在10秒后弹出", Toast.LENGTH_SHORT).show()
     }
 
