@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- 通知权限（Android 13+ 动态请求） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
-        android:label="Hello World"
+        android:label="Clash提醒"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
@@ -12,5 +15,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 提醒广播接收器 -->
+        <receiver
+            android:name=".ReminderReceiver"
+            android:exported="false" />
     </application>
 </manifest>

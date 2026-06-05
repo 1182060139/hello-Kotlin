@@ -1,12 +1,18 @@
 package com.example.helloworld
 
+import android.Manifest
 import android.app.Activity
-import android.content.ClipboardManager
-import android.content.Context
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.*
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import org.json.JSONException
@@ -31,59 +37,63 @@ class MainActivity : Activity() {
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
-        // 1. 加载 ID → 名称映射
         loadIdMapping()
-
-        // 2. 尝试加载之前保存的数据
         loadSavedData()
 
         btnPaste.setOnClickListener {
             loadFromClipboard()
         }
+
+        // 请求通知权限（Android 13+）
+        requestNotificationPermission()
     }
 
-    /** 从 assets/id_mapping.json 读取所有 _id 和 name，构建映射表 */
+    /** 请求通知权限，拒绝也不影响其他功能 */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
+            }
+        }
+    }
+
+    // ---------- ID 映射加载 ----------
     private fun loadIdMapping() {
         try {
-            // 尝试列出 assets 目录下的文件，确认文件存在（可选）
             val files = assets.list("") ?: emptyArray()
             if (!files.contains("id_mapping.json")) {
-                Toast.makeText(this, "未找到 id_mapping.json 文件，请确认已放入 assets 目录", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "未找到 id_mapping.json 文件", Toast.LENGTH_LONG).show()
                 return
             }
-
             val jsonString = assets.open("id_mapping.json").bufferedReader().use { it.readText() }
             val root = JSONObject(jsonString)
             val map = mutableMapOf<Int, String>()
-
-            // 遍历 JSON 对象的所有键（类别）
             val categories = root.keys()
             while (categories.hasNext()) {
                 val category = categories.next()
                 val arr = root.optJSONArray(category) ?: continue
                 for (i in 0 until arr.length()) {
-                    try {
-                        // 安全获取对象，如果元素不是 JSONObject 会返回 null
-                        val obj = arr.optJSONObject(i) ?: continue
-                        val id = obj.getInt("_id")
-                        val name = obj.getString("name")
-                        map[id] = name
-                    } catch (e: Exception) {
-                        // 跳过解析失败的单条记录
-                        continue
-                    }
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.getInt("_id")
+                    val name = obj.getString("name")
+                    map[id] = name
                 }
             }
             idToNameMap = map
-            Toast.makeText(this, "映射文件加载成功，共 ${map.size} 个名称", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "映射加载成功，共 ${map.size} 项", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             idToNameMap = emptyMap()
-            val errorMsg = e.message ?: "未知错误"
-            Toast.makeText(this, "映射文件加载失败: $errorMsg", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "映射文件加载失败: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
-    /** 从 SharedPreferences 加载上次保存的 JSON 并展示 */
+    // ---------- 持久化加载 ----------
     private fun loadSavedData() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedJson = prefs.getString(KEY_JSON, null)
@@ -92,6 +102,8 @@ class MainActivity : Activity() {
                 val upgrades = parseUpgrades(savedJson)
                 recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
                 tvError.visibility = android.view.View.GONE
+                // 设置闹钟提醒
+                scheduleAllReminders(upgrades)
             } catch (e: Exception) {
                 prefs.edit().remove(KEY_JSON).apply()
                 recyclerView.adapter = UpgradeAdapter(emptyList(), idToNameMap)
@@ -103,7 +115,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 从剪贴板读取 JSON，解析并保存 */
+    // ---------- 从剪贴板导入 ----------
     private fun loadFromClipboard() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         val clip = clipboard.primaryClip
@@ -112,12 +124,16 @@ class MainActivity : Activity() {
             if (text.isNotBlank()) {
                 try {
                     val upgrades = parseUpgrades(text)
+                    // 保存 JSON
                     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     prefs.edit().putString(KEY_JSON, text).apply()
 
                     recyclerView.adapter = UpgradeAdapter(upgrades, idToNameMap)
                     tvError.visibility = android.view.View.GONE
-                    Toast.makeText(this, "导入成功，找到 ${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "导入成功，${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
+
+                    // 重新设置提醒
+                    scheduleAllReminders(upgrades)
                 } catch (e: JSONException) {
                     showError("剪贴板内容不是有效的 JSON 数据")
                 } catch (e: Exception) {
@@ -131,13 +147,53 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun showError(message: String) {
-        tvError.text = message
-        tvError.visibility = android.view.View.VISIBLE
-        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    // ---------- 提醒设置 ----------
+    /** 根据最新的升级列表，重新安排所有闹钟 */
+    private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+        // 1. 取消之前所有提醒（通过存储的 uniqueKey 集合）
+        val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
+        for (key in oldKeys) {
+            val intent = Intent(this, ReminderReceiver::class.java)
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, key.hashCode(), intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            pendingIntent?.let { alarmManager.cancel(it) }
+        }
+
+        // 2. 设置新的闹钟
+        val newKeys = mutableSetOf<String>()
+        for (item in upgrades) {
+            val reminderTime = item.endTimeMillis - 30_000L  // 结束前30秒
+            // 如果提醒时间已经过去，则跳过
+            if (reminderTime <= System.currentTimeMillis()) continue
+
+            val intent = Intent(this, ReminderReceiver::class.java).apply {
+                putExtra("id", item.id)
+                putExtra("name", idToNameMap[item.id] ?: "ID:${item.id}")
+            }
+            val requestCode = item.uniqueKey.hashCode()
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, requestCode, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                reminderTime,
+                pendingIntent
+            )
+            newKeys.add(item.uniqueKey)
+        }
+
+        // 3. 保存新 key 集合，供下次取消使用
+        prefs.edit().putStringSet("reminder_keys", newKeys).apply()
     }
 
-    /** 解析游戏导出的 JSON，提取所有 timer > 0 的项目 */
+    // ---------- JSON 解析 ----------
     private fun parseUpgrades(jsonString: String): List<UpgradeItem> {
         val json = JSONObject(jsonString)
         val timestampUtcSec = json.getLong("timestamp")
@@ -160,5 +216,11 @@ class MainActivity : Activity() {
             }
         }
         return result.sortedBy { it.endTimeMillis }
+    }
+
+    private fun showError(message: String) {
+        tvError.text = message
+        tvError.visibility = android.view.View.VISIBLE
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }
