@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="建筑/英雄助手每日开始时间"/>
+
+    <EditText
+        android:id="@+id/etBuilderStart"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="07:00"
+        android:inputType="datetime" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="实验室助手每日开始时间"/>
+
+    <EditText
+        android:id="@+id/etLabStart"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="07:00"
+        android:inputType="datetime" />
+</LinearLayout>
