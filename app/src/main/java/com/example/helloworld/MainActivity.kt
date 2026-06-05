@@ -47,7 +47,7 @@ class MainActivity : Activity() {
         tvError = findViewById(R.id.tvError)
         val btnPaste = findViewById<Button>(R.id.btnPaste)
         val btnTestReminder = findViewById<Button>(R.id.btnTestReminder)
-        val btnSettings = findViewById<Button>(R.id.btnSettings) // 新增设置按钮
+        val btnSettings = findViewById<Button>(R.id.btnSettings)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
 
@@ -59,7 +59,7 @@ class MainActivity : Activity() {
 
         btnPaste.setOnClickListener { loadFromClipboard() }
         btnTestReminder.setOnClickListener { scheduleTestReminder() }
-        btnSettings.setOnClickListener { showSettingsDialog() } // 设置每日开始时间
+        btnSettings.setOnClickListener { showSettingsDialog() }
     }
 
     // ---------- 通知渠道 ----------
@@ -78,13 +78,46 @@ class MainActivity : Activity() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED
             ) {
-                ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    1001
+                )
             }
         }
     }
 
     // ---------- ID 映射 ----------
-    private fun loadIdMapping() { /* 保持原样，略 */ }
+    private fun loadIdMapping() {
+        try {
+            val files = assets.list("") ?: emptyArray()
+            if (!files.contains("id_mapping.json")) {
+                Toast.makeText(this, "未找到 id_mapping.json 文件", Toast.LENGTH_LONG).show()
+                return
+            }
+            val jsonString = assets.open("id_mapping.json").bufferedReader().use { it.readText() }
+            val root = JSONObject(jsonString)
+            val map = mutableMapOf<Int, String>()
+            val categories = root.keys()
+            while (categories.hasNext()) {
+                val category = categories.next()
+                val arr = root.optJSONArray(category) ?: continue
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optInt("_id", -1)
+                    val name = obj.optString("name", "")
+                    if (id != -1 && name.isNotEmpty()) {
+                        map[id] = name
+                    }
+                }
+            }
+            idToNameMap = map
+            Toast.makeText(this, "映射加载成功，共 ${map.size} 项", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            idToNameMap = emptyMap()
+            Toast.makeText(this, "映射文件加载失败: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
 
     // ---------- 持久化加载 ----------
     private fun loadSavedData() {
@@ -101,10 +134,17 @@ class MainActivity : Activity() {
                 recyclerView.adapter = adapter
                 tvError.visibility = android.view.View.GONE
                 scheduleAllReminders(currentUpgrades)
-            } catch (e: Exception) { /* 错误处理 */ }
+            } catch (e: Exception) {
+                prefs.edit().remove(KEY_JSON).apply()
+                currentUpgrades.clear()
+                adapter = UpgradeAdapter(currentUpgrades, idToNameMap) { _, _ -> }
+                recyclerView.adapter = adapter
+                tvError.text = "保存的数据已过期，请重新导入"
+                tvError.visibility = android.view.View.VISIBLE
+            }
         } else {
             currentUpgrades.clear()
-            adapter = UpgradeAdapter(currentUpgrades, idToNameMap) { item, pos -> }
+            adapter = UpgradeAdapter(currentUpgrades, idToNameMap) { _, _ -> }
             recyclerView.adapter = adapter
         }
     }
@@ -130,10 +170,17 @@ class MainActivity : Activity() {
                     tvError.visibility = android.view.View.GONE
                     Toast.makeText(this, "导入成功，${upgrades.size} 个升级项目", Toast.LENGTH_SHORT).show()
                     scheduleAllReminders(currentUpgrades)
-                } catch (e: JSONException) { showError("剪贴板内容不是有效的 JSON 数据") }
-                catch (e: Exception) { showError("解析出错: ${e.message}") }
-            } else showError("剪贴板为空")
-        } else showError("剪贴板无内容")
+                } catch (e: JSONException) {
+                    showError("剪贴板内容不是有效的 JSON 数据")
+                } catch (e: Exception) {
+                    showError("解析出错: ${e.message}")
+                }
+            } else {
+                showError("剪贴板为空")
+            }
+        } else {
+            showError("剪贴板无内容")
+        }
     }
 
     // ---------- 解析（含 helpers）----------
@@ -154,8 +201,10 @@ class MainActivity : Activity() {
         }
 
         val result = mutableListOf<UpgradeItem>()
-        val keys = arrayOf("buildings","buildings2","heroes","heroes2",
-                          "pets","siege_machines","units","units2","spells")
+        val keys = arrayOf(
+            "buildings", "buildings2", "heroes", "heroes2",
+            "pets", "siege_machines", "units", "units2", "spells"
+        )
         for (key in keys) {
             val arr = json.optJSONArray(key) ?: continue
             for (i in 0 until arr.length()) {
@@ -172,14 +221,16 @@ class MainActivity : Activity() {
                         else -> 0
                     }
                     val endTimeMillis = (timestampUtcSec + timer) * 1000L
-                    result.add(UpgradeItem(
-                        id = id,
-                        endTimeMillis = endTimeMillis,
-                        targetLevel = lvl,
-                        helperRecurrent = helper,
-                        helperId = helperId,
-                        dailyReductionSeconds = reduction
-                    ))
+                    result.add(
+                        UpgradeItem(
+                            id = id,
+                            endTimeMillis = endTimeMillis,
+                            targetLevel = lvl,
+                            helperRecurrent = helper,
+                            helperId = helperId,
+                            dailyReductionSeconds = reduction
+                        )
+                    )
                 }
             }
         }
@@ -213,19 +264,15 @@ class MainActivity : Activity() {
         builder.setPositiveButton("计算") { dialog, _ ->
             val timeStr = input.text.toString().trim()
             if (timeStr.matches(Regex("\\d{1,2}:\\d{2}"))) {
-                // 保存时间
                 prefs.edit().putString(startKey, timeStr).apply()
-                // 计算预估
                 val estimated = calculateEstimatedEndTime(item, timeStr)
                 if (estimated > 0) {
                     currentUpgrades[position] = item.copy(estimatedEndTimeMillis = estimated)
                     adapter.notifyItemChanged(position)
-                    // 询问是否更新闹钟
                     AlertDialog.Builder(this)
                         .setTitle("是否按预估时间更新提醒？")
                         .setMessage("点击确定将重新设置闹钟")
                         .setPositiveButton("更新") { _, _ ->
-                            // 应用预估时间到 endTimeMillis，并重新设置闹钟
                             currentUpgrades[position] = currentUpgrades[position].copy(
                                 endTimeMillis = estimated,
                                 estimatedEndTimeMillis = 0
@@ -255,7 +302,6 @@ class MainActivity : Activity() {
         val cooldownSeconds = helperCooldowns[item.helperId] ?: 0
         val reductionMillis = item.dailyReductionSeconds * 1000L
 
-        // 解析每日开始时间
         val parts = dailyStartTimeStr.split(":")
         val hour = parts[0].toIntOrNull() ?: return item.endTimeMillis
         val minute = parts[1].toIntOrNull() ?: return item.endTimeMillis
@@ -268,7 +314,6 @@ class MainActivity : Activity() {
         val todayStart = cal.timeInMillis
         val nextDailyStart = if (todayStart > now) todayStart else todayStart + 86400000L
 
-        // 冷却结束时间
         val cooldownEnd = now + cooldownSeconds * 1000L
         val firstAvailable = maxOf(nextDailyStart, cooldownEnd)
 
@@ -281,14 +326,14 @@ class MainActivity : Activity() {
         return now + newRemaining
     }
 
-    // ---------- 设置每日开始时间对话框 ----------
+    // ---------- 设置对话框 ----------
     private fun showSettingsDialog() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val builderStart = prefs.getString(KEY_BUILDER_START, "07:00") ?: "07:00"
         val labStart = prefs.getString(KEY_LAB_START, "07:00") ?: "07:00"
 
         val inflater = layoutInflater
-        val view = inflater.inflate(R.layout.dialog_settings, null) // 需自定义布局
+        val view = inflater.inflate(R.layout.dialog_settings, null)
         val etBuilder = view.findViewById<EditText>(R.id.etBuilderStart)
         val etLab = view.findViewById<EditText>(R.id.etLabStart)
         etBuilder.setText(builderStart)
@@ -306,14 +351,90 @@ class MainActivity : Activity() {
             .show()
     }
 
-    // ---------- 闹钟设置 ----------
-    private fun scheduleAllReminders(upgrades: List<UpgradeItem>) { /* 保持之前的 setAlarmClock 逻辑 */ }
+    // ---------- 闹钟设置（使用 setAlarmClock） ----------
+    private fun scheduleAllReminders(upgrades: List<UpgradeItem>) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    private fun scheduleTestReminder() { /* 保持 */ }
+        val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
+        for (key in oldKeys) {
+            val intent = Intent(this, ReminderReceiver::class.java)
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, key.hashCode(), intent,
+                PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+            )
+            pendingIntent?.let { alarmManager.cancel(it) }
+        }
 
-    private fun showError(msg: String) {
-        tvError.text = msg
+        val newKeys = mutableSetOf<String>()
+        var nextReminderTime: Long = Long.MAX_VALUE
+        var nextReminderName: String = ""
+
+        for (item in upgrades) {
+            val reminderTime = item.endTimeMillis - 30_000L
+            if (reminderTime <= System.currentTimeMillis()) continue
+
+            val intent = Intent(this, ReminderReceiver::class.java).apply {
+                putExtra("id", item.id)
+                putExtra("name", idToNameMap[item.id] ?: "ID:${item.id}")
+                data = Uri.parse("custom://${item.uniqueKey}")
+            }
+            val requestCode = System.identityHashCode(item.uniqueKey)
+            val pendingIntent = PendingIntent.getBroadcast(
+                this, requestCode, intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            alarmManager.setAlarmClock(
+                AlarmManager.AlarmClockInfo(reminderTime, pendingIntent),
+                pendingIntent
+            )
+
+            newKeys.add(item.uniqueKey)
+
+            if (reminderTime < nextReminderTime) {
+                nextReminderTime = reminderTime
+                nextReminderName = idToNameMap[item.id] ?: "ID:${item.id}"
+            }
+        }
+
+        prefs.edit().putStringSet("reminder_keys", newKeys).apply()
+
+        if (newKeys.isEmpty()) {
+            Toast.makeText(this, "所有升级时间均已过去，未设置提醒", Toast.LENGTH_LONG).show()
+        } else {
+            val formatter = java.time.format.DateTimeFormatter.ofPattern("MM-dd HH:mm:ss")
+            val timeStr = java.time.Instant.ofEpochMilli(nextReminderTime)
+                .atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .toLocalDateTime()
+                .format(formatter)
+            Toast.makeText(this, "已设置提醒，下次提醒：$timeStr ($nextReminderName)", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun scheduleTestReminder() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, ReminderReceiver::class.java).apply {
+            putExtra("id", 9999)
+            putExtra("name", "测试建筑")
+            data = Uri.parse("custom://test_9999")
+        }
+        val requestCode = 9999
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, requestCode, intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val triggerTime = System.currentTimeMillis() + 10_000L
+        alarmManager.setAlarmClock(
+            AlarmManager.AlarmClockInfo(triggerTime, pendingIntent),
+            pendingIntent
+        )
+        Toast.makeText(this, "测试通知将在10秒后弹出", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showError(message: String) {
+        tvError.text = message
         tvError.visibility = android.view.View.VISIBLE
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 }
