@@ -278,7 +278,7 @@ class MainActivity : Activity() {
             remaining -= elapsed
             if (remaining <= 0) {
                 // 在等待期间已经完成
-                return currentTime + (remaining + elapsed) * 1000L  // 实际完成时间
+                return currentTime + ((remaining + elapsed) * 1000).toLong()
             }
 
             // 使用助手：需要完成 min(remaining, accelSec) 秒升级量
