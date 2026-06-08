@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -54,6 +56,75 @@ class MainActivity : Activity() {
 
         btnPaste.setOnClickListener { loadFromClipboard() }
         btnTestReminder.setOnClickListener { scheduleTestReminder() }
+    }
+
+    // ---------- 菜单 ----------
+    override fun onCreateOptionsMenu(menu: Menu?): Boolean {
+        menuInflater.inflate(R.menu.main_menu, menu)
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            R.id.menu_upgrade -> {
+                showUpgradeMenu()
+                true
+            }
+            R.id.menu_buildings -> {
+                showBuildingsLevelMenu()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    private fun showUpgradeMenu() {
+        // 升级项目页面 - 显示现有功能
+        Toast.makeText(this, "升级项目页面已显示", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun showBuildingsLevelMenu() {
+        // 提取所有建筑及其当前等级
+        val buildingsInfo = mutableListOf<String>()
+        
+        // 从 JSON 数据中解析建筑信息
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedJson = prefs.getString(KEY_JSON, null)
+        
+        if (!savedJson.isNullOrBlank()) {
+            try {
+                val json = JSONObject(savedJson)
+                val buildingKeys = arrayOf("buildings", "buildings2")
+                
+                for (key in buildingKeys) {
+                    val arr = json.optJSONArray(key) ?: continue
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val id = obj.getInt("data")
+                        val level = obj.optInt("lvl", 0)
+                        val name = idToNameMap[id] ?: "ID:$id"
+                        buildingsInfo.add("$name - 等级 $level")
+                    }
+                }
+                
+                if (buildingsInfo.isEmpty()) {
+                    Toast.makeText(this, "未找到任何建筑信息", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                
+                // 显示建筑等级列表
+                AlertDialog.Builder(this)
+                    .setTitle("玩家建筑等级 (共${buildingsInfo.size}个)")
+                    .setItems(buildingsInfo.toTypedArray()) { _, _ -> }
+                    .setPositiveButton("关闭", null)
+                    .show()
+                    
+            } catch (e: Exception) {
+                Toast.makeText(this, "读取建筑信息失败: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(this, "还未导入任何数据，请先导入升级数据", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ---------- 通知渠道 ----------
