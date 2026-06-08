@@ -173,6 +173,7 @@ class MainActivity : Activity() {
     private fun parseUpgrades(jsonString: String): List<UpgradeItem> {
         val json = JSONObject(jsonString)
         val timestampUtcSec = json.getLong("timestamp")
+        val startTime = timestampUtcSec * 1000L
 
         // 提取所有助手的冷却时间（按 helperId 存储）
         val helperCooldownMap = mutableMapOf<Int, Int>()
@@ -203,14 +204,13 @@ class MainActivity : Activity() {
                     val helper = obj.optBoolean("helper_recurrent", false)
                     val (category, reduction) = getCategoryAndReduction(key)
 
-                    // 确定助手ID（建筑/英雄用 93000000，实验室用 93000001）
                     val helperId = when (category) {
                         "building", "hero" -> 93000000
                         "lab" -> 93000001
                         else -> 0
                     }
 
-                    val endTimeMillis = (timestampUtcSec + timer) * 1000L
+                    val endTimeMillis = startTime + timer * 1000L
                     val targetLvl = if (lvl > 0) lvl + 1 else 0
 
                     // 计算预估结束时间（若使用了助手）
@@ -218,10 +218,10 @@ class MainActivity : Activity() {
                     if (helper && reduction > 0) {
                         val cdSeconds = helperCooldownMap[helperId] ?: 0
                         estimated = calculateEstimatedEndTime(
-                            endTimeMillis,
-                            reduction,
-                            cdSeconds,
-                            timestampUtcSec
+                            startTime = startTime,
+                            originalEndTime = endTimeMillis,
+                            dailyReductionSeconds = reduction,
+                            cooldownSeconds = cdSeconds
                         )
                     }
 
@@ -241,7 +241,6 @@ class MainActivity : Activity() {
         return result.sortedBy { it.endTimeMillis }
     }
 
-    /** 确定类别和每天减少的秒数（8h 或 1h） */
     private fun getCategoryAndReduction(key: String): Pair<String, Long> {
         return when (key) {
             "buildings", "buildings2", "traps" -> "building" to 28800L
@@ -253,47 +252,46 @@ class MainActivity : Activity() {
 
     /**
      * 模拟助手使用，计算预估结束时间
-     * @param originalEndTime 原始结束时间戳（毫秒）
-     * @param dailyReductionSeconds 每次加速秒数
-     * @param cooldownSeconds helpers 中的冷却秒数（导出的剩余冷却）
-     * @param exportTimestampSec 导出时的 UTC 秒数
+     * 逻辑：每次助手使用，升级剩余时间直接减少 dailyReductionSeconds 秒；
+     * 助手下次可用时间 = 本次使用时刻 + 23小时，且不早于7:00。
      */
     private fun calculateEstimatedEndTime(
+        startTime: Long,
         originalEndTime: Long,
         dailyReductionSeconds: Long,
-        cooldownSeconds: Int,
-        exportTimestampSec: Long
+        cooldownSeconds: Int
     ): Long {
         if (dailyReductionSeconds <= 0) return originalEndTime
 
-        val reductionMillis = dailyReductionSeconds * 1000L
-        val firstAvailable = (exportTimestampSec + cooldownSeconds) * 1000L
+        var currentEnd = originalEndTime
 
-        var currentTime = firstAvailable
-        var totalReduction = 0L
+        // 第一次可用时间
+        var nextAvailable = startTime + cooldownSeconds * 1000L
+        nextAvailable = adjustTo7am(nextAvailable)
 
-        while (currentTime < originalEndTime) {
-            // 使用一次助手，累积加速量
-            totalReduction += reductionMillis
+        while (nextAvailable < currentEnd) {
+            // 使用一次助手，升级时间缩短
+            currentEnd -= dailyReductionSeconds * 1000L
 
-            // 下一次可用 = 当前使用时间 + 23小时
-            var next = currentTime + 23 * 3600 * 1000L
-
-            // 若下次可用时间在7:00之前，则推迟到7:00
-            val cal = Calendar.getInstance()
-            cal.timeInMillis = next
-            if (cal.get(Calendar.HOUR_OF_DAY) < 7) {
-                cal.set(Calendar.HOUR_OF_DAY, 7)
-                cal.set(Calendar.MINUTE, 0)
-                cal.set(Calendar.SECOND, 0)
-                cal.set(Calendar.MILLISECOND, 0)
-                next = cal.timeInMillis
-            }
-            currentTime = next
+            // 下一次可用时间 = 本次使用时间 + 23 小时，再调整到7点后
+            nextAvailable = nextAvailable + (23 * 3600 * 1000L)
+            nextAvailable = adjustTo7am(nextAvailable)
         }
+        return currentEnd
+    }
 
-        val newEnd = originalEndTime - totalReduction
-        return if (newEnd > System.currentTimeMillis()) newEnd else originalEndTime
+    /** 若时间戳对应的小时小于7，则推迟到当天7:00 */
+    private fun adjustTo7am(timeMs: Long): Long {
+        val cal = Calendar.getInstance()
+        cal.timeInMillis = timeMs
+        if (cal.get(Calendar.HOUR_OF_DAY) < 7) {
+            cal.set(Calendar.HOUR_OF_DAY, 7)
+            cal.set(Calendar.MINUTE, 0)
+            cal.set(Calendar.SECOND, 0)
+            cal.set(Calendar.MILLISECOND, 0)
+            return cal.timeInMillis
+        }
+        return timeMs
     }
 
     // ---------- 点击列表项：若使用了助手，可选择按预估时间更新提醒 ----------
@@ -304,7 +302,6 @@ class MainActivity : Activity() {
             .setTitle("助手提醒")
             .setMessage("是否将提醒时间更新为预估时间？")
             .setPositiveButton("更新") { _, _ ->
-                // 将原始结束时间替换为预估时间，并清除预估标记
                 currentUpgrades[position] = item.copy(
                     endTimeMillis = item.estimatedEndTimeMillis,
                     estimatedEndTimeMillis = 0
@@ -322,7 +319,6 @@ class MainActivity : Activity() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // 取消旧闹钟
         val oldKeys = prefs.getStringSet("reminder_keys", emptySet()) ?: emptySet()
         for (key in oldKeys) {
             val intent = Intent(this, ReminderReceiver::class.java)
